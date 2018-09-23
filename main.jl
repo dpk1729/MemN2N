@@ -62,11 +62,11 @@ function main()
 	train_data = createVocab(parsed_args["path"], idx2word, word2idx)
 	num_words = length(word2idx)
 	data = Data(train_data, num_words)
-	memory = create_memory(num_words, parsed_args["edim"], parsed_args["lindim"], 
-							parsed_args["mem_size"], parsed_args["init_hid"], 
+	memory = create_memory(num_words, parsed_args["edim"], parsed_args["lindim"],
+							parsed_args["mem_size"], parsed_args["init_hid"],
 							parsed_args["init_std"], parsed_args["nhops"])
 	train(data, memory, parsed_args["epochs"], parsed_args["batch_size"], parsed_args["max_grad_norm"], parsed_args["init_lr"])
-    
+
 end
 
 main()

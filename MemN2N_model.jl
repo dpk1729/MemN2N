@@ -2,8 +2,8 @@ import Flux: TrackedArray, param, onehot, OneHotVector, back!, relu, logitcrosse
 import Flux.Optimise: Momentum, SGD
 using BSON: @save
 import NNlib: logsoftmax
-import JLD: save, load
-
+#import JLD: save, load
+using LinearAlgebra
 struct Data
     train::Array
     num_words::Int
@@ -19,10 +19,9 @@ mutable struct Memory
     mem_size::Int64
     init_hid::Float64
     A::TrackedArray
-    B::TrackedArray
     C::TrackedArray
     T_A::TrackedArray
-    T_B::TrackedArray
+    T_C::TrackedArray
     W::TrackedArray
 
 end
@@ -38,15 +37,14 @@ function create_memory(nwords::Int64, edim::Int64,lindim::Int64, mem_size::Int64
     nhops::Int64: number of hops through memory before output
     """
     A = param(randn(nwords, edim)*init_std)
-    B = param(randn(nwords, edim)*init_std)
-    C = param(randn(edim, edim)*init_std)
+    C = param(randn(nwords, edim)*init_std)
 
     T_A = param(randn(mem_size, edim)*init_std)
-    T_B = param(randn(mem_size, edim)*init_std)
+    T_C = param(randn(mem_size, edim)*init_std)
 
     W = param(randn(edim, nwords)*init_std)
 
-    return Memory(edim, lindim, nhops, mem_size, init_hid, A, B, C, T_A, T_B, W)
+    return Memory(edim, lindim, nhops, mem_size, init_hid, A, C, T_A, T_C, W)
 end
 
 function run_one_input(memory::Memory, input::Array, time::Array, context::Array)
@@ -60,34 +58,29 @@ function run_one_input(memory::Memory, input::Array, time::Array, context::Array
     """
     hidden = [param(input)]
     Ain_c = memory.A[context,:]
-    Aint_t = memory.T_A[time,:]
-    Ain = Ain_c + Aint_t
+    Ain_t = memory.T_A[time,:]
+    Ain = Ain_c + Ain_t
 
-    Bin_c = memory.B[context,:]
-    Bint_t = memory.T_B[time,:]
-    Bin = Bin_c + Bint_t
+    Cin_c = memory.C[context,:]
+    Cin_t = memory.T_C[time,:]
+    Cin = Cin_c + Cin_t
 
     for hop=1:memory.nhops
         hid3dim = hidden[end]
         Aout = hid3dim*Ain'
         P = reshape(exp.(logsoftmax(Aout[1:end])), (1,:))
-
-        Bout = P*Bin
-
-        Cout = hidden[end]*memory.C
-        Dout = Cout + Bout
+        Cout = P*Cin
+        u_k = Cout +  hidden[end]
         if memory.lindim == memory.edim
-            push!(hidden, Dout)
+            push!(hidden, u_k)
         elseif memory.lindim==0
-            push!(hidden, relu.(Dout))
+            push!(hidden, relu.(u_k))
         else
-            # for i=memory.lindim:memory.edim
-            #     Dout.data[i] = relu.(Dout.data[i])
-            # end
-            Dout_lin = Dout[1, 1:memory.lindim]
-            Dout_nonLin = relu.(Dout[1, memory.lindim+1:end])
-            Dout_combined = reshape(cat(1, Dout_lin, Dout_nonLin), (1,:))
-            push!(hidden, Dout)
+
+            u_k_lin = u_k[1, 1:memory.lindim]
+            u_k_nonLin = relu.(u_k[1, memory.lindim+1:end])
+            u_k_combined = reshape(cat(u_k_lin, u_k_nonLin, dims=1), (1,:))
+            push!(hidden, u_k_combined)
         end
     end
     return hidden[end]
@@ -106,7 +99,7 @@ function run_batch(memory::Memory, input::Array, time::Array, context::Array, ta
         if any(isnan, final_hidden)
             println(i)
         end
-        z = squeeze(final_hidden*memory.W,1)
+        z = dropdims(final_hidden*memory.W,dims=1)
         c = logitcrossentropy(z, targets[i,:])
         batch_cost += c
     end
@@ -133,7 +126,7 @@ function get_trainables(memory::Memory)
     Returns trainable parameters of memory
     """
     trainables = []
-    for fieldname in fieldnames(memory)
+    for fieldname in fieldnames(typeof(memory))
         field = getfield(memory, fieldname)
         if isa(field, TrackedArray)
             push!(trainables, field)
@@ -168,7 +161,7 @@ function create_training_batch(data, num_words, batchsize, memory::Memory)
     x = fill(memory.init_hid, (batchsize, memory.edim))
     time=zeros(Int64, (batchsize, memory.mem_size))
     for t=1:memory.mem_size
-        time[:,t]=t
+        time[:,t].=t
     end
 
     target = zeros(Int64, (batchsize, num_words))
@@ -190,6 +183,7 @@ function train(data::Data, memory::Memory, epochs::Int, batchsize::Int, max_norm
     """
     trainables = get_trainables(memory)
     opt = SGD(trainables, η)
+
     N = convert(Int, ceil(length(data.train)/batchsize))
     cost = 0
     # mem_copy = deepcopy(memory)
@@ -207,13 +201,13 @@ function train(data::Data, memory::Memory, epochs::Int, batchsize::Int, max_norm
             #     error("NaN in weights")
             # end
             # @show i, cost
-            if i%100==0
-                @show i, cost
+            # if i%100==0
+            #     @show i, cost
                 # @save "model_$(i)_$(round(Int, cost.data))" memory
-            end
+            # end
         end
         @show epoch, cost
-        if epoch%10 == 0
+        if epoch%1000 == 0
             @save "model_$(epoch)_$(round(Int, cost.data))" memory
         end
     end
